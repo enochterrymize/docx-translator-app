@@ -3,6 +3,8 @@ import os
 import re
 import tempfile
 import time
+import uuid
+from datetime import date, datetime
 
 import openai
 import requests
@@ -291,11 +293,37 @@ def translate_docx(file, src_lang, dest_lang, translation_method, openai_api_key
     return doc
 
 
+# Initialize user tracking
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())
+    st.session_state.daily_translations = 0
+    st.session_state.last_reset_date = str(date.today())
+
+# Reset daily count if it's a new day
+if st.session_state.last_reset_date != str(date.today()):
+    st.session_state.daily_translations = 0
+    st.session_state.last_reset_date = str(date.today())
+
 st.title("📄 AIPROFI.COM - FREE DOCX Translator Tool")
 
 # Sidebar for settings
 with st.sidebar:
     st.header("⚙️ Translation Settings")
+
+    # Display daily usage
+    st.subheader("📊 Daily Usage")
+    remaining_translations = 5 - st.session_state.daily_translations
+    st.metric(
+        "Translations Remaining",
+        remaining_translations,
+        f"{st.session_state.daily_translations}/5 used",
+    )
+
+    if remaining_translations <= 0:
+        st.error("❌ Daily limit reached! Come back tomorrow.")
+        st.info("💡 Upgrade to premium for unlimited translations!")
+
+    st.divider()
 
     translation_method = st.selectbox(
         "Translation Service",
@@ -359,43 +387,55 @@ dest_lang = st.text_input(
 )
 
 if uploaded_file and src_lang and dest_lang:
-    # Check if OpenAI is selected but no API key provided
-    if translation_method == "OpenAI" and not openai_api_key:
-        st.error(
-            "❌ Please provide your OpenAI API key in the sidebar to use OpenAI translation."
+    # Check daily limit
+    if st.session_state.daily_translations >= 5:
+        st.error("❌ Daily limit reached! You've used all 5 free translations today.")
+        st.info(
+            "💡 Come back tomorrow for more free translations, or upgrade to premium!"
         )
     else:
-        if st.button("Translate"):
-            try:
-                with st.spinner("Preparing translation..."):
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".docx"
-                    ) as tmp_input:
-                        tmp_input.write(uploaded_file.read())
-                        tmp_input_path = tmp_input.name
+        # Check if OpenAI is selected but no API key provided
+        if translation_method == "OpenAI" and not openai_api_key:
+            st.error(
+                "❌ Please provide your OpenAI API key in the sidebar to use OpenAI translation."
+            )
+        else:
+            if st.button("Translate"):
+                try:
+                    with st.spinner("Preparing translation..."):
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=".docx"
+                        ) as tmp_input:
+                            tmp_input.write(uploaded_file.read())
+                            tmp_input_path = tmp_input.name
 
-                    doc = translate_docx(
-                        tmp_input_path,
-                        src_lang,
-                        dest_lang,
-                        translation_method,
-                        openai_api_key,
-                    )
-
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".docx"
-                    ) as tmp_output:
-                        doc.save(tmp_output.name)
-                        tmp_output_path = tmp_output.name
-
-                    with open(tmp_output_path, "rb") as f:
-                        st.success("✅ Translation complete!")
-                        st.download_button(
-                            label="Download Translated DOCX",
-                            data=f,
-                            file_name=f"translated_{uploaded_file.name}",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        doc = translate_docx(
+                            tmp_input_path,
+                            src_lang,
+                            dest_lang,
+                            translation_method,
+                            openai_api_key,
                         )
-            except Exception as e:
-                st.error(f"An error occurred during translation: {str(e)}")
-                st.info("Please try again or check your language codes.")
+
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=".docx"
+                        ) as tmp_output:
+                            doc.save(tmp_output.name)
+                            tmp_output_path = tmp_output.name
+
+                        with open(tmp_output_path, "rb") as f:
+                            st.success("✅ Translation complete!")
+                            st.download_button(
+                                label="Download Translated DOCX",
+                                data=f,
+                                file_name=f"translated_{uploaded_file.name}",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            )
+
+                    # Increment daily translation count
+                    st.session_state.daily_translations += 1
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"An error occurred during translation: {str(e)}")
+                    st.info("Please try again or check your language codes.")
