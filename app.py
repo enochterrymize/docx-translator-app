@@ -291,7 +291,7 @@ def translate_docx(file, src_lang, dest_lang, translation_method, openai_api_key
     return doc
 
 
-st.title("📄 DOCX Translator Tool")
+st.title("📄 AIPROFI.COM - FREE DOCX Translator Tool")
 
 # Sidebar for settings
 with st.sidebar:
