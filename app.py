@@ -313,7 +313,6 @@ with st.sidebar:
 
         openai_api_key = openai_api_key or st.text_input(
             "OpenAI API Key",
-            value="REMOVED_KEY",
             type="password",
             help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys",
         )
