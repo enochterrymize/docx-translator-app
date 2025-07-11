@@ -1,3 +1,4 @@
 streamlit
 python-docx
 deep-translator
+openai>=1.0.0

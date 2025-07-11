@@ -1,7 +1,11 @@
+import json
+import os
 import re
 import tempfile
 import time
 
+import openai
+import requests
 import streamlit as st
 from deep_translator import GoogleTranslator
 from docx import Document
@@ -34,7 +38,168 @@ def is_url_or_link(text):
     return False
 
 
-def translate_text_safely(text, src_lang, dest_lang, max_retries=3):
+def translate_with_openai_direct(text, src_lang, dest_lang, api_key):
+    """Translate text using direct HTTP requests to OpenAI API."""
+    try:
+        # Clean the API key
+        api_key = api_key.strip()
+
+        # Validate API key format
+        if not api_key.startswith("sk-"):
+            raise Exception("Invalid API key format")
+
+        # Create language mapping for better prompts
+        lang_names = {
+            "en": "English",
+            "de": "German",
+            "es": "Spanish",
+            "fr": "French",
+            "it": "Italian",
+            "pt": "Portuguese",
+            "ru": "Russian",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "zh": "Chinese",
+            "ar": "Arabic",
+            "hi": "Hindi",
+        }
+
+        src_lang_name = lang_names.get(src_lang, src_lang)
+        dest_lang_name = lang_names.get(dest_lang, dest_lang)
+
+        # Limit text length to avoid token limits
+        if len(text) > 3000:
+            text = text[:3000] + "..."
+
+        # Prepare the request
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": f"You are a professional translator. Translate the following text from {src_lang_name} to {dest_lang_name}. Preserve the original formatting, punctuation, and meaning. Do not translate URLs, email addresses, or technical terms that should remain unchanged. Return only the translated text without any explanations.",
+                },
+                {"role": "user", "content": text},
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.3,
+        }
+
+        # Make the request
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=30,
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            translated_text = result["choices"][0]["message"]["content"].strip()
+            return translated_text if translated_text else text
+        elif response.status_code == 401:
+            raise Exception("Invalid API key or authentication failed")
+        elif response.status_code == 429:
+            raise Exception("Rate limit exceeded. Please wait a moment and try again.")
+        else:
+            raise Exception(
+                f"API request failed with status {response.status_code}: {response.text}"
+            )
+
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Network error: {str(e)}")
+    except Exception as e:
+        raise Exception(f"Direct API translation error: {str(e)}")
+
+
+def translate_with_openai(text, src_lang, dest_lang, api_key):
+    """Translate text using OpenAI API with fallback to direct HTTP."""
+    try:
+        # Clean the API key and create client
+        api_key = api_key.strip()
+
+        # Validate API key format
+        if not api_key.startswith("sk-"):
+            raise Exception("Invalid API key format")
+
+        # Try using the OpenAI client first
+        try:
+            client = openai.OpenAI(api_key=api_key)
+
+            # Create language mapping for better prompts
+            lang_names = {
+                "en": "English",
+                "de": "German",
+                "es": "Spanish",
+                "fr": "French",
+                "it": "Italian",
+                "pt": "Portuguese",
+                "ru": "Russian",
+                "ja": "Japanese",
+                "ko": "Korean",
+                "zh": "Chinese",
+                "ar": "Arabic",
+                "hi": "Hindi",
+            }
+
+            src_lang_name = lang_names.get(src_lang, src_lang)
+            dest_lang_name = lang_names.get(dest_lang, dest_lang)
+
+            # Limit text length to avoid token limits
+            if len(text) > 3000:
+                text = text[:3000] + "..."
+
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"You are a professional translator. Translate the following text from {src_lang_name} to {dest_lang_name}. Preserve the original formatting, punctuation, and meaning. Do not translate URLs, email addresses, or technical terms that should remain unchanged. Return only the translated text without any explanations.",
+                    },
+                    {"role": "user", "content": text},
+                ],
+                max_tokens=1000,
+                temperature=0.3,
+            )
+
+            result = response.choices[0].message.content.strip()
+            return result if result else text
+
+        except (TypeError, AttributeError) as e:
+            if "proxies" in str(e) or "unexpected keyword argument" in str(e):
+                # Fallback to direct HTTP request
+                return translate_with_openai_direct(text, src_lang, dest_lang, api_key)
+            else:
+                raise e
+
+    except openai.AuthenticationError:
+        raise Exception("Invalid API key or authentication failed")
+    except openai.RateLimitError:
+        raise Exception("Rate limit exceeded. Please wait a moment and try again.")
+    except openai.APIError as e:
+        raise Exception(f"OpenAI API error: {str(e)}")
+    except Exception as e:
+        raise Exception(f"OpenAI translation error: {str(e)}")
+
+
+def translate_with_google(text, src_lang, dest_lang):
+    """Translate text using Google Translate."""
+    try:
+        translator = GoogleTranslator(source=src_lang, target=dest_lang)
+        result = translator.translate(text)
+        return result
+    except Exception as e:
+        raise Exception(f"Google translation error: {str(e)}")
+
+
+def translate_text_safely(
+    text, src_lang, dest_lang, translation_method, openai_api_key=None, max_retries=3
+):
     """Safely translate text with retry logic and error handling."""
     # Skip translation if text is a URL or link
     if is_url_or_link(text):
@@ -46,9 +211,10 @@ def translate_text_safely(text, src_lang, dest_lang, max_retries=3):
 
     for attempt in range(max_retries):
         try:
-            translator = GoogleTranslator(source=src_lang, target=dest_lang)
-            result = translator.translate(text)
-            return result
+            if translation_method == "OpenAI" and openai_api_key:
+                return translate_with_openai(text, src_lang, dest_lang, openai_api_key)
+            else:
+                return translate_with_google(text, src_lang, dest_lang)
         except Exception as e:
             if attempt < max_retries - 1:
                 time.sleep(1)  # Wait before retrying
@@ -59,7 +225,7 @@ def translate_text_safely(text, src_lang, dest_lang, max_retries=3):
     return text
 
 
-def translate_docx(file, src_lang, dest_lang):
+def translate_docx(file, src_lang, dest_lang, translation_method, openai_api_key=None):
     doc = Document(file)
 
     # Progress tracking
@@ -83,7 +249,9 @@ def translate_docx(file, src_lang, dest_lang):
                 status_text.text(
                     f"Translating paragraph {current_item + 1}/{total_items}..."
                 )
-                translated_text = translate_text_safely(para.text, src_lang, dest_lang)
+                translated_text = translate_text_safely(
+                    para.text, src_lang, dest_lang, translation_method, openai_api_key
+                )
                 para.text = translated_text
                 current_item += 1
                 progress_bar.progress(current_item / total_items)
@@ -103,7 +271,11 @@ def translate_docx(file, src_lang, dest_lang):
                             f"Translating table cell {current_item + 1}/{total_items}..."
                         )
                         translated_text = translate_text_safely(
-                            cell.text, src_lang, dest_lang
+                            cell.text,
+                            src_lang,
+                            dest_lang,
+                            translation_method,
+                            openai_api_key,
                         )
                         cell.text = translated_text
                         current_item += 1
@@ -120,6 +292,36 @@ def translate_docx(file, src_lang, dest_lang):
 
 
 st.title("📄 DOCX Translator Tool")
+
+# Sidebar for settings
+with st.sidebar:
+    st.header("⚙️ Translation Settings")
+
+    translation_method = st.selectbox(
+        "Translation Service",
+        ["Google Translate", "OpenAI"],
+        help="Choose your preferred translation service",
+    )
+
+    if translation_method == "OpenAI":
+        st.info("🔑 OpenAI requires an API key for translation")
+        # Try to get API key from secrets, fallback to text input
+        try:
+            openai_api_key = st.secrets.get("OPENAI_API_KEY")
+        except:
+            openai_api_key = None
+
+        openai_api_key = openai_api_key or st.text_input(
+            "OpenAI API Key",
+            value="REMOVED_KEY",
+            type="password",
+            help="Enter your OpenAI API key. Get one at https://platform.openai.com/api-keys",
+        )
+
+        if not openai_api_key:
+            st.warning("⚠️ Please enter your OpenAI API key to use OpenAI translation")
+    else:
+        openai_api_key = None
 
 # Language codes reference
 with st.expander("ℹ️ Language Codes Reference"):
@@ -158,31 +360,43 @@ dest_lang = st.text_input(
 )
 
 if uploaded_file and src_lang and dest_lang:
-    if st.button("Translate"):
-        try:
-            with st.spinner("Preparing translation..."):
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".docx"
-                ) as tmp_input:
-                    tmp_input.write(uploaded_file.read())
-                    tmp_input_path = tmp_input.name
+    # Check if OpenAI is selected but no API key provided
+    if translation_method == "OpenAI" and not openai_api_key:
+        st.error(
+            "❌ Please provide your OpenAI API key in the sidebar to use OpenAI translation."
+        )
+    else:
+        if st.button("Translate"):
+            try:
+                with st.spinner("Preparing translation..."):
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".docx"
+                    ) as tmp_input:
+                        tmp_input.write(uploaded_file.read())
+                        tmp_input_path = tmp_input.name
 
-                doc = translate_docx(tmp_input_path, src_lang, dest_lang)
-
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".docx"
-                ) as tmp_output:
-                    doc.save(tmp_output.name)
-                    tmp_output_path = tmp_output.name
-
-                with open(tmp_output_path, "rb") as f:
-                    st.success("✅ Translation complete!")
-                    st.download_button(
-                        label="Download Translated DOCX",
-                        data=f,
-                        file_name=f"translated_{uploaded_file.name}",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    doc = translate_docx(
+                        tmp_input_path,
+                        src_lang,
+                        dest_lang,
+                        translation_method,
+                        openai_api_key,
                     )
-        except Exception as e:
-            st.error(f"An error occurred during translation: {str(e)}")
-            st.info("Please try again or check your language codes.")
+
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".docx"
+                    ) as tmp_output:
+                        doc.save(tmp_output.name)
+                        tmp_output_path = tmp_output.name
+
+                    with open(tmp_output_path, "rb") as f:
+                        st.success("✅ Translation complete!")
+                        st.download_button(
+                            label="Download Translated DOCX",
+                            data=f,
+                            file_name=f"translated_{uploaded_file.name}",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        )
+            except Exception as e:
+                st.error(f"An error occurred during translation: {str(e)}")
+                st.info("Please try again or check your language codes.")
